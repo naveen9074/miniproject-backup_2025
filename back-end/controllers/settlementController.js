@@ -1,103 +1,142 @@
 // backend/controllers/settlementController.js
 const asyncHandler = require('express-async-handler');
-const { Settlement, User } = require('../models/schema');
+const { Settlement, Group } = require('../models/schema');
+const { calculateAndSaveSettlements } = require('../utils/calculateSettlement');
 
-// @desc    Get details for a single settlement (for verification screen)
-// @route   GET /api/settlements/:id
-// @access  Private
+// -------------------------------------------
+// GET SETTLEMENT DETAILS
+// -------------------------------------------
 const getSettlementDetails = asyncHandler(async (req, res) => {
-  const settlement = await Settlement.findById(req.params.id)
-    .populate('debtor', 'username')
-    .populate('creditor', 'username');
+  const { id } = req.params;
+
+  // Check if it's a pseudo ID (expense-based settlement)
+  if (id.includes('-')) {
+    res.status(400);
+    throw new Error('Invalid settlement ID. Use actual settlement records for payments.');
+  }
+
+  const settlement = await Settlement.findById(id)
+    .populate('debtor', 'name email username _id')
+    .populate('creditor', 'name email username _id')
+    .populate('group', 'name');
 
   if (!settlement) {
     res.status(404);
     throw new Error('Settlement not found');
   }
 
-  // Only the creditor or debtor can view this
-  if (settlement.creditor._id.toString() !== req.user._id.toString() && 
-      settlement.debtor._id.toString() !== req.user._id.toString()) {
-    res.status(401);
-    throw new Error('Not authorized to view this settlement');
-  }
-
-  res.json({ settlement });
+  res.status(200).json(settlement);
 });
 
-// @desc    Submit payment proof for a settlement
-// @route   PATCH /api/settlements/:id/pay
-// @access  Private (as Debtor)
+// -------------------------------------------
+// SUBMIT PAYMENT PROOF (Debtor pays creditor)
+// -------------------------------------------
 const submitPaymentProof = asyncHandler(async (req, res) => {
-  const settlement = await Settlement.findById(req.params.id);
+  const { id } = req.params;
+  const { amount } = req.body;
+  const currentUserId = req.user._id;
 
+  // Handle both real settlement IDs and pseudo IDs
+  let settlement;
+  
+  if (id.includes('-')) {
+    // Pseudo ID format: expenseId-userId
+    // This means we need to create a new settlement or find existing one
+    res.status(400);
+    throw new Error('Please use the proper settlement system. Create a settlement first.');
+  }
+
+  settlement = await Settlement.findById(id);
   if (!settlement) {
     res.status(404);
     throw new Error('Settlement not found');
   }
-  if (settlement.debtor.toString() !== req.user._id.toString()) {
-    res.status(401);
-    throw new Error('Only the debtor can submit payment');
-  }
-  if (!req.file) {
-    res.status(400);
-    throw new Error('Payment proof image is required');
+
+  // Verify the current user is the debtor
+  if (settlement.debtor.toString() !== currentUserId.toString()) {
+    res.status(403);
+    throw new Error('Only the debtor can submit payment proof');
   }
 
+  let paymentProofUrl = '';
+  if (req.file) {
+    paymentProofUrl = `/${req.file.path.replace(/\\/g, '/')}`;
+  }
+
+  // Update settlement status to pending verification
   settlement.status = 'paid_pending_verification';
-  settlement.amount_paid = req.body.amount_paid || settlement.amount;
-  settlement.payment_proof_url = `/${req.file.path.replace(/\\/g, '/')}`; // Store the URL
-  settlement.paid_at = Date.now();
+  settlement.paymentProof = paymentProofUrl;
+  settlement.paidAt = new Date();
+  settlement.paidAmount = parseFloat(amount);
 
-  const updatedSettlement = await settlement.save();
-  res.json(updatedSettlement);
+  await settlement.save();
+
+  res.status(200).json({
+    message: 'Payment proof submitted successfully',
+    settlement,
+  });
 });
 
-// @desc    Verify or reject a payment proof
-// @route   PATCH /api/settlements/:id/verify
-// @access  Private (as Creditor)
+// -------------------------------------------
+// VERIFY PAYMENT (Creditor verifies payment)
+// -------------------------------------------
 const verifyPayment = asyncHandler(async (req, res) => {
-  const { status } = req.body; // 'verified' or 'rejected'
-  if (!['verified', 'rejected'].includes(status)) {
+  const { id } = req.params;
+  const { action } = req.body; // 'accept' or 'reject'
+  const currentUserId = req.user._id;
+
+  let settlement;
+
+  if (id.includes('-')) {
     res.status(400);
-    throw new Error('Invalid status');
+    throw new Error('Invalid settlement ID');
   }
 
-  const settlement = await Settlement.findById(req.params.id);
-
+  settlement = await Settlement.findById(id);
   if (!settlement) {
     res.status(404);
     throw new Error('Settlement not found');
   }
-  if (settlement.creditor.toString() !== req.user._id.toString()) {
-    res.status(401);
-    throw new Error('Only the creditor can verify this payment');
+
+  // Verify the current user is the creditor
+  if (settlement.creditor.toString() !== currentUserId.toString()) {
+    res.status(403);
+    throw new Error('Only the creditor can verify payment');
   }
 
-  settlement.status = status;
-  const updatedSettlement = await settlement.save();
-  res.json(updatedSettlement);
-});
+  if (action === 'accept') {
+    settlement.status = 'completed';
+    settlement.verifiedAt = new Date();
+    await settlement.save();
 
-// @desc    Get UPI ID for a user
-// @route   GET /api/users/upi/:userId
-// @access  Private
-const getUserUpiId = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.params.userId);
-    if (!user) {
-        res.status(404);
-        throw new Error('User not found');
+    // Recalculate settlements for the group
+    if (settlement.group) {
+      await calculateAndSaveSettlements(settlement.group);
     }
-    if (!user.upiId) {
-        res.status(400);
-        throw new Error('User has not set their UPI ID');
-    }
-    res.json({ upiId: user.upiId });
+
+    res.status(200).json({
+      message: 'Payment verified successfully',
+      settlement,
+    });
+  } else if (action === 'reject') {
+    settlement.status = 'pending';
+    settlement.paymentProof = '';
+    settlement.paidAt = null;
+    settlement.paidAmount = 0;
+    await settlement.save();
+
+    res.status(200).json({
+      message: 'Payment rejected. Status reset to pending.',
+      settlement,
+    });
+  } else {
+    res.status(400);
+    throw new Error('Invalid action. Use "accept" or "reject"');
+  }
 });
 
 module.exports = {
   getSettlementDetails,
   submitPaymentProof,
   verifyPayment,
-  getUserUpiId // Export the new UPI function
 };

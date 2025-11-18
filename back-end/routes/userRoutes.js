@@ -5,10 +5,11 @@ const {
   registerUser, 
   loginUser, 
   getUserProfile, 
-  updateUserProfile 
+  updateUserProfile,
+  getUserUpiId  
 } = require('../controllers/userController');
-// Import the new function from settlementController
-const { getUserUpiId } = require('../controllers/settlementController');
+// DELETE THIS LINE:
+// const { getUserUpiId } = require('../controllers/settlementController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Public routes

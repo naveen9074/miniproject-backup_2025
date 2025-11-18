@@ -7,16 +7,15 @@ const {
   verifyPayment,
 } = require('../controllers/settlementController');
 const { protect } = require('../middleware/authMiddleware');
-const { upload } = require('../middleware/uploadMiddleware'); // For image uploads
+const upload = require('../middleware/uploadMiddleware');
 
 // Get details for a single settlement (for verify screen)
-router.route('/:id').get(protect, getSettlementDetails);
+router.get('/:id', protect, getSettlementDetails);
 
 // Submit payment proof (debtor)
-router.route('/:id/pay')
-  .patch(protect, upload.single('paymentProof'), submitPaymentProof);
+router.patch('/:id/pay', protect, upload.single('paymentProof'), submitPaymentProof);
 
 // Verify or reject payment (creditor)
-router.route('/:id/verify').patch(protect, verifyPayment);
+router.patch('/:id/verify', protect, verifyPayment);
 
 module.exports = router;

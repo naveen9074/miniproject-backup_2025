@@ -1,5 +1,5 @@
 // backend/controllers/userController.js
-const { User, Settlement } = require('../models/schema'); // <-- Import Settlement
+const { User, Settlement } = require('../models/schema');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('express-async-handler');
@@ -93,7 +93,6 @@ exports.loginUser = asyncHandler(async (req, res) => {
   });
 });
 
-// --- UPDATED FUNCTION ---
 // @desc    Get logged in user's profile AND dues
 // @route   GET /api/users/me
 // @access  Private
@@ -110,7 +109,7 @@ exports.getUserProfile = asyncHandler(async (req, res) => {
   const pendingDues = await Settlement.find({ 
     debtor: req.user._id, 
     status: 'pending' 
-  }).populate('group', 'name'); // Also get the group name
+  }).populate('group', 'name');
 
   // 3. Send both back to the app
   res.json({
@@ -121,10 +120,9 @@ exports.getUserProfile = asyncHandler(async (req, res) => {
       phoneNo: user.phoneNo,
       upiId: user.upiId
     },
-    pendingDues: pendingDues // <-- SEND THE DUES
+    pendingDues: pendingDues
   });
 });
-// --- END OF UPDATE ---
 
 // @desc    Update user profile
 // @route   PATCH /api/users/profile
@@ -136,7 +134,7 @@ exports.updateUserProfile = asyncHandler(async (req, res) => {
     user.username = req.body.username || user.username;
     user.email = req.body.email || user.email;
     user.phoneNo = req.body.phoneNo ? normalizePhone(req.body.phoneNo) : user.phoneNo;
-    user.upiId = req.body.upiId; // Allow setting UPI ID to empty string
+    user.upiId = req.body.upiId;
 
     if (req.body.password) {
       user.password = await bcrypt.hash(req.body.password, 10);
@@ -158,4 +156,24 @@ exports.updateUserProfile = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('User not found');
   }
+});
+
+// @desc    Get a specific user's UPI ID
+// @route   GET /api/users/upi/:userId
+// @access  Private
+exports.getUserUpiId = asyncHandler(async (req, res) => {
+  const { userId } = req.params;
+
+  const user = await User.findById(userId).select('upiId username email _id');
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  res.status(200).json({
+    userId: user._id,
+    username: user.username,
+    email: user.email,
+    upiId: user.upiId || ''
+  });
 });

@@ -1,32 +1,65 @@
 // backend/server.js
 const express = require('express');
 const dotenv = require('dotenv');
-const cors = require('cors'); // Ensure you have this
+const cors = require('cors');
 const connectDB = require('./config/db');
-const path = require('path'); // Required for file uploads
+const path = require('path');
 
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
-
-// Import Routes
-const userRoutes = require('./routes/userRoutes');
-const groupRoutes = require('./routes/groupRoutes');
-const expenseRoutes = require('./routes/expenseRoutes');
-const settlementRoutes = require('./routes/settlementRoutes');
 
 dotenv.config();
 connectDB();
 
 const app = express();
 
-app.use(cors()); // Enable CORS for frontend connection
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- MOUNT ROUTES (This is the part you might be missing) ---
-app.use('/api/users', userRoutes);        // <--- Matches /api/users/register
-app.use('/api/groups', groupRoutes);
-app.use('/api/expenses', expenseRoutes);
-app.use('/api/settlements', settlementRoutes);
+// Import Routes with debugging
+try {
+  console.log('Loading userRoutes...');
+  const userRoutes = require('./routes/userRoutes');
+  console.log('✓ userRoutes loaded');
+  if (!userRoutes) throw new Error('userRoutes is null/undefined');
+  app.use('/api/users', userRoutes);
+} catch (e) {
+  console.error('✗ Failed to load userRoutes:', e.message);
+  process.exit(1);
+}
+
+try {
+  console.log('Loading groupRoutes...');
+  const groupRoutes = require('./routes/groupRoutes');
+  console.log('✓ groupRoutes loaded');
+  if (!groupRoutes) throw new Error('groupRoutes is null/undefined');
+  app.use('/api/groups', groupRoutes);
+} catch (e) {
+  console.error('✗ Failed to load groupRoutes:', e.message);
+  process.exit(1);
+}
+
+try {
+  console.log('Loading expenseRoutes...');
+  const expenseRoutes = require('./routes/expenseRoutes');
+  console.log('✓ expenseRoutes loaded');
+  if (!expenseRoutes) throw new Error('expenseRoutes is null/undefined');
+  app.use('/api/expenses', expenseRoutes);
+} catch (e) {
+  console.error('✗ Failed to load expenseRoutes:', e.message);
+  process.exit(1);
+}
+
+try {
+  console.log('Loading settlementRoutes...');
+  const settlementRoutes = require('./routes/settlementRoutes');
+  console.log('✓ settlementRoutes loaded');
+  if (!settlementRoutes) throw new Error('settlementRoutes is null/undefined');
+  app.use('/api/settlements', settlementRoutes);
+} catch (e) {
+  console.error('✗ Failed to load settlementRoutes:', e.message);
+  process.exit(1);
+}
 
 // Serve Uploaded Images
 app.use('/uploads', express.static(path.join(__dirname, '/uploads')));

@@ -1,10 +1,10 @@
-// (app)/group/[id].tsx
+// frontend-expo/app/group/[id].tsx
 import React, { useState, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, Alert, 
-  ActivityIndicator, Button, TouchableOpacity, SafeAreaView
+  ActivityIndicator, TouchableOpacity, SafeAreaView
 } from 'react-native';
-import { Link, useLocalSearchParams, Stack, router, useFocusEffect } from 'expo-router';
+import { Link, useLocalSearchParams, router, useFocusEffect, Stack } from 'expo-router';
 import api from '../../src/api'; 
 import * as SecureStore from 'expo-secure-store';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,29 +13,24 @@ import * as Animatable from 'react-native-animatable';
 export default function GroupDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>(); 
   const [group, setGroup] = useState<any>(null);
-  const [expenses, setExpenses] = useState([]);
-  const [settlements, setSettlements] = useState([]);
+  const [expenses, setExpenses] = useState<any[]>([]);
+  const [settlements, setSettlements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserId, setCurrentUserId] = useState(null);
-  
-  // --- NEW STATE for collapsible list ---
-  const [isMembersVisible, setMembersVisible] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserNet, setCurrentUserNet] = useState<number>(0);
 
   useFocusEffect(
     useCallback(() => {
-      const loadAllData = async () => {
+      const loadData = async () => {
         const userInfo = await SecureStore.getItemAsync('userInfo');
         if (userInfo) {
           const parsed = JSON.parse(userInfo);
           const uId = parsed._id || (parsed.user && parsed.user._id);
-          setCurrentUserId(uId);
+          setCurrentUserId(String(uId));
         }
-        if (id) {
-          fetchGroupDetails();
-        }
+        if (id) fetchGroupDetails();
       };
-      loadAllData();
-      return () => {};
+      loadData();
     }, [id])
   );
 
@@ -44,230 +39,171 @@ export default function GroupDetailScreen() {
       setLoading(true);
       const response = await api.get(`/groups/${id}`);
       setGroup(response.data.group);
-      setExpenses(response.data.expenses);
-      setSettlements(response.data.settlements);
+      setExpenses(response.data.expenses || []);
+      setSettlements(response.data.settlements || []);
+      setCurrentUserNet(Number(response.data.currentUserNet || 0));
     } catch (error: any) {
-      console.error('Failed to fetch group details:', error.response?.data || error);
       Alert.alert('Error', 'Failed to fetch group details.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDeleteGroup = async () => {
-    Alert.alert(
-      "Delete Group",
-      "Are you sure you want to delete this group? This will delete all expenses and settlements. This action cannot be undone.",
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Delete', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await api.delete(`/groups/${id}`);
-              Alert.alert('Success', 'Group deleted.');
-              router.replace('/groups');
-            } catch (error: any) {
-              Alert.alert('Error', error.response?.data?.message || 'Failed to delete group.');
-            }
-          }
-        }
-      ]
-    );
+  const getMyShareForExpense = (expense: any) => {
+    if (!currentUserId) return 0;
+    const mySplit = (expense.splits || []).find((s: any) => {
+      const uid = (s.user && (s.user._id || s.user)) ? (s.user._id || s.user) : null;
+      return String(uid) === String(currentUserId);
+    });
+    if (mySplit && String(expense.paidBy._id) !== String(currentUserId)) return Number(mySplit.amount || 0);
+    return 0;
   };
 
-  // --- RENDER SECTION: SETTLEMENTS (Helper) ---
-  const renderSettlementItem = (item: any, index: number) => {
-    // (This function is unchanged)
-    if (item.debtor._id === currentUserId && item.status !== 'verified') {
-      const isPendingVerification = item.status === 'paid_pending_verification';
+  const handleDeleteGroup = async () => {
+    Alert.alert("Delete Group", "Are you sure?", [
+      { text: 'Cancel', style: 'cancel' },
+      { 
+        text: 'Delete', style: 'destructive',
+        onPress: async () => {
+          try {
+            await api.delete(`/groups/${id}`);
+            router.replace('/groups');
+          } catch (error) { Alert.alert('Error', 'Failed to delete'); }
+        }
+      }
+    ]);
+  };
+
+  // --- Use currentUserNet to show Total Outstanding reliably ---
+  const renderTotalSettlement = () => {
+    if (currentUserNet < -0.01) {
+      // user owes money (negative)
+      
+      const amount = Math.abs(currentUserNet);
       return (
-        <Animatable.View animation="fadeIn" delay={index * 100} key={item._id} style={styles.settlementItem}>
-          <Ionicons name="arrow-up-circle" size={24} color="#D9534F" style={styles.settleIcon} />
-          <Text style={styles.settlementText}>
-            You owe <Text style={{fontWeight: 'bold'}}>{item.creditor.username}</Text> <Text style={{fontWeight: 'bold'}}>₹{item.amount.toFixed(2)}</Text>
-          </Text>
-          {isPendingVerification ? (
-             <Text style={styles.pendingText}>Pending</Text>
-          ) : (
-            <Link 
-              href={{
-                pathname: '/settle-payment',
-                params: { 
-                  settlementId: item._id, 
-                  amount: item.amount, 
-                  creditorName: item.creditor.username,
-                  creditorId: item.creditor._id 
-                }
-              }}
-              asChild
-            >
-              <TouchableOpacity style={styles.payButton}>
-                <Text style={styles.payButtonText}>Pay</Text>
-              </TouchableOpacity>
-            </Link>
-          )}
+        <Animatable.View animation="fadeIn" style={styles.settlementCardRed}>
+           <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+             <View>
+               <Text style={styles.settleTitle}>Total Outstanding</Text>
+               <Text style={styles.settleDesc}>You owe</Text>
+             </View>
+             <Text style={styles.settleAmountRed}>₹{amount.toFixed(2)}</Text>
+           </View>
+           <TouchableOpacity 
+             style={styles.payButton}
+             onPress={() => {
+               // navigate to a generic settle-all screen - you already have flow to settle by settlementId,
+               // but for simplicity we redirect user to a page showing all personal pending settlements.
+               router.push({ pathname: '/my-settlements', params: { groupId: id } });
+             }}
+           >
+             <Text style={styles.payButtonText}>Settle Full Amount</Text>
+           </TouchableOpacity>
         </Animatable.View>
       );
-    } else if (item.creditor._id === currentUserId && item.status !== 'verified') {
-      const isPendingVerification = item.status === 'paid_pending_verification';
+    } 
+    
+    if (currentUserNet > 0.01) {
+      const amount = currentUserNet;
       return (
-        <Animatable.View animation="fadeIn" delay={index * 100} key={item._id} style={isPendingVerification ? styles.verifyItem : styles.settlementItemGreen}>
-          <Ionicons name="arrow-down-circle" size={24} color="#1D976C" style={styles.settleIcon} />
-          <Text style={styles.settlementText}>
-            <Text style={{fontWeight: 'bold'}}>{item.debtor.username}</Text> owes you <Text style={{fontWeight: 'bold'}}>₹{item.amount.toFixed(2)}</Text>
-          </Text>
-          {isPendingVerification && (
-            <Link href={`/verify-payment/${item._id}`} asChild>
-              <TouchableOpacity style={styles.verifyButton}>
-                <Text style={styles.verifyButtonText}>Verify</Text>
-              </TouchableOpacity>
-            </Link>
-          )}
+        <Animatable.View animation="fadeIn" style={styles.settlementCardGreen}>
+           <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+             <View>
+               <Text style={styles.settleTitle}>You are owed</Text>
+               <Text style={styles.settleDesc}>Group owes you</Text>
+             </View>
+             <Text style={styles.settleAmountGreen}>₹{amount.toFixed(2)}</Text>
+           </View>
         </Animatable.View>
       );
     }
-    return null; 
-  };
-  
-  // --- RENDER SECTION: EXPENSES (For FlatList) ---
-  const renderExpenseItem = ({ item, index }: { item: any, index: number }) => (
-    // (This function is unchanged)
-    <Animatable.View animation="fadeInUp" delay={index * 50} style={styles.expenseItem}>
-      <View style={styles.expenseIcon}>
-        <Ionicons name="receipt-outline" size={24} color="#1D976C" />
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.expenseDesc}>{item.description}</Text>
-        <Text style={styles.expenseUser}>Paid by {item.paidBy.username}</Text>
-      </View>
-      <Text style={styles.expenseAmount}>₹{item.amount.toFixed(2)}</Text>
-    </Animatable.View>
-  );
 
-  // --- RENDER HEADER (Settlements & Members) ---
+    return (
+      <View style={styles.settledCard}>
+        <Ionicons name="checkmark-circle" size={24} color="#1D976C" />
+        <Text style={styles.settledText}>All settled up!</Text>
+      </View>
+    );
+  };
+
+  const renderExpenseItem = ({ item }: { item: any }) => {
+    const myShare = getMyShareForExpense(item);
+    const isPayer = String(item.paidBy._id) === String(currentUserId);
+    const isSettled = !!item.isSettled;
+
+    return (
+      <TouchableOpacity 
+        style={styles.expenseItem}
+        activeOpacity={0.7}
+        onPress={() => {
+          router.push(`/expense/${item._id}`);
+        }}
+      >
+        <View style={styles.expenseIcon}>
+          <Ionicons name="receipt-outline" size={24} color="#1D976C" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.expenseDesc}>{item.description}</Text>
+          <Text style={styles.expenseUser}>Paid by {item.paidBy.username}</Text>
+        </View>
+        
+        <View style={{alignItems: 'flex-end', marginRight: 10}}>
+          <Text style={styles.expenseAmount}>₹{Number(item.amount).toFixed(2)}</Text>
+
+          {isSettled ? (
+            <View style={{marginTop:6, paddingHorizontal:8, paddingVertical:4, borderRadius:8, backgroundColor:'#eef7ed'}}>
+              <Text style={{color:'#1D976C', fontSize:12, fontWeight:'700'}}>Paid</Text>
+            </View>
+          ) : isPayer ? (
+            <Text style={{color: '#1D976C', fontSize: 12, fontWeight: '600'}}>You paid</Text>
+          ) : myShare > 0 ? (
+            <Text style={{color: '#D9534F', fontSize: 12, fontWeight: '600'}}>You owe ₹{myShare.toFixed(2)}</Text>
+          ) : (
+              <Text style={{color: '#999', fontSize: 12}}>Not involved</Text>
+          )}
+        </View>
+        
+        <Ionicons name="chevron-forward" size={20} color="#ccc" />
+      </TouchableOpacity>
+    );
+  };
+
   const ListHeader = () => {
     if (!group) return null;
-    
-    const relevantSettlements = settlements.filter(item => 
-      (item.debtor._id === currentUserId || item.creditor._id === currentUserId) && item.status !== 'verified'
-    );
-    
-    // Get the first few members for the abstract view
-    const membersToShow = group.members.slice(0, 3);
-    const remainingCount = group.members.length - membersToShow.length;
-
-    return (
-      <View style={{ paddingHorizontal: 20, paddingTop: 10 }}>
-        
-        <View style={styles.infoBox}>
-          <View style={styles.infoRow}>
-            <Ionicons name="calendar-outline" size={16} color="gray" />
-            <Text style={styles.infoText}>
-              Created: {new Date(group.createdAt).toLocaleDateString()}
-            </Text>
-          </View>
-          {group.dueDate && (
-            <View style={styles.infoRow}>
-              <Ionicons name="flag-outline" size={16} color="#D9534F" />
-              <Text style={[styles.infoText, { color: '#D9534F' }]}>
-                Due: {new Date(group.dueDate).toLocaleDateString()}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <Text style={styles.subtitle}>Settlement Summary</Text>
-        <View style={styles.listContainer}>
-          {relevantSettlements.length > 0 ? (
-            relevantSettlements.map(renderSettlementItem)
-          ) : (
-            <Text style={styles.emptyText}>No settlements needed. You're all square!</Text>
-          )}
-        </View>
-
-        {/* --- THIS IS THE NEW COLLAPSIBLE MEMBER LIST --- */}
-        <TouchableOpacity 
-          style={styles.collapsibleHeader} 
-          onPress={() => setMembersVisible(!isMembersVisible)}
-          activeOpacity={0.7}
-        >
-          <View style={{ flex: 1 }}>
-            <Text style={styles.subtitle}>Group Members</Text>
-            {/* Abstract icon view */}
-            <View style={styles.memberAbstractView}>
-              {membersToShow.map((member: any, index: number) => (
-                <View key={member._id} style={[styles.memberIcon, { marginLeft: index * -10 }]}>
-                  <Ionicons name="person" size={16} color="white" />
-                </View>
-              ))}
-              {remainingCount > 0 && (
-                <Text style={styles.memberIconText}>+{remainingCount}</Text>
-              )}
-            </View>
-          </View>
-          <Ionicons 
-            name={isMembersVisible ? "chevron-up-outline" : "chevron-down-outline"} 
-            size={24} 
-            color="#555" 
-          />
-        </TouchableOpacity>
-
-        {/* The list itself, which is now conditional and animated */}
-        {isMembersVisible && (
-          <Animatable.View 
-            animation="fadeIn" 
-            duration={400} 
-            style={styles.listContainer}
-          >
-            {group.members.map((member: any) => (
-              <View key={member._id} style={styles.memberItem}>
-                <Ionicons name="person-circle-outline" size={22} color="#555" />
-                <Text style={styles.memberName}>{member.username}</Text>
-              </View>
-            ))}
-          </Animatable.View>
-        )}
-        {/* --- END OF FIX --- */}
-        
-        <Text style={styles.subtitle}>All Expenses</Text>
-      </View>
-    );
-  };
-
-  // --- RENDER FOOTER (Delete Button) ---
-  const ListFooter = () => {
-    if (!group) return null;
-    const isCreator = group.createdBy._id === currentUserId;
-
     return (
       <View style={{ padding: 20 }}>
-        {expenses.length > 0 && <View style={styles.separator} />}
-        {isCreator && (
-          <View style={styles.deleteButtonContainer}>
-            <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteGroup}>
-              <Ionicons name="trash-outline" size={20} color="#D9534F" />
-              <Text style={styles.deleteButtonText}>Delete Group</Text>
-            </TouchableOpacity>
-          </View>
+        <View style={styles.headerInfo}>
+           <Text style={styles.groupName}>{group.name}</Text>
+           <Text style={{color:'#666'}}>{(group.members || []).length} Members</Text>
+        </View>
+
+        <Text style={styles.sectionTitle}>Group Settlement</Text>
+        {renderTotalSettlement()}
+        
+        <Text style={styles.sectionTitle}>All Expenses</Text>
+      </View>
+    );
+  };
+
+  const ListFooter = () => {
+    if (!group) return null;
+    return (
+      <View style={{ padding: 20 }}>
+        {String(group.createdBy._id) === String(currentUserId) && (
+          <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteGroup}>
+            <Ionicons name="trash-outline" size={20} color="#D9534F" />
+            <Text style={styles.deleteButtonText}>Delete Group</Text>
+          </TouchableOpacity>
         )}
       </View>
     );
   };
 
-  if (loading || !group) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1D976C" />
-      </View>
-    );
-  }
+  if (loading || !group) return <View style={styles.loadingContainer}><ActivityIndicator size="large" color="#1D976C" /></View>;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <Stack.Screen options={{ title: group.name }} />
-      
       <FlatList
         data={expenses}
         renderItem={renderExpenseItem}
@@ -276,231 +212,65 @@ export default function GroupDetailScreen() {
         ListFooterComponent={ListFooter} 
         ListEmptyComponent={
           <>
-            {ListHeader()}
-            <Text style={styles.emptyText}>No expenses added yet.</Text>
-            {ListFooter()}
+             {ListHeader()}
+             <Text style={styles.emptyText}>No expenses added yet.</Text>
+             {ListFooter()}
           </>
         }
         onRefresh={fetchGroupDetails}
         refreshing={loading}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        contentContainerStyle={{ paddingBottom: 100 }} 
       />
-
+      
       <View style={styles.buttonRow}>
-        <Link 
-          href={{ pathname: "/add-members", params: { groupId: id, groupName: group.name } }} 
-          style={styles.buttonLink}
-        >
-          <Ionicons name="person-add-outline" size={20} color="#1D976C" />
-          <Text style={styles.buttonText}>Add Members</Text>
+        <Link href={{ pathname: "/add-members", params: { groupId: id, groupName: group.name } }} style={styles.buttonLink}>
+          <Text style={styles.buttonText}>+ Members</Text>
         </Link>
-        <Link 
-          href={{ pathname: "/add-expense", params: { groupId: id } }} 
-          style={[styles.buttonLink, styles.buttonPrimary]}
-        >
-          <Ionicons name="add-outline" size={24} color="white" />
-          <Text style={[styles.buttonText, styles.buttonTextPrimary]}>Add Expense</Text>
+        <Link href={{ pathname: "/add-expense", params: { groupId: id } }} style={[styles.buttonLink, styles.buttonPrimary]}>
+          <Text style={[styles.buttonText, styles.buttonTextPrimary]}>+ Expense</Text>
         </Link>
       </View>
     </SafeAreaView>
   );
 }
 
-// --- ALL STYLES ---
+// ... keep your styles as before (paste existing styles) ...
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: 'white' },
-  container: { flex: 1, backgroundColor: 'white' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'white' },
-  subtitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 15, marginTop: 20 },
-  listContainer: {
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 12,
-    marginBottom: 10,
-    overflow: 'hidden', 
-  },
-  expenseItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: 'white',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  expenseIcon: {
-    marginRight: 10,
-    backgroundColor: '#e6fff0',
-    padding: 8,
-    borderRadius: 20,
-  },
-  expenseDesc: { fontSize: 16, fontWeight: 'bold' },
-  expenseUser: { fontSize: 12, color: 'gray', marginTop: 2 },
-  expenseAmount: { fontSize: 16, fontWeight: 'bold', color: '#1D976C' },
-  settlementItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: '#fffbe6', 
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  settlementItemGreen: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: '#e6fff0',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  verifyItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: '#e6f7ff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  settleIcon: {
-    marginRight: 10,
-  },
-  settlementText: { fontSize: 16, flex: 1, flexWrap: 'wrap' },
-  pendingText: { color: 'orange', fontWeight: 'bold', marginLeft: 10 },
-  payButton: {
-    backgroundColor: '#007bff',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 5,
-    marginLeft: 10,
-  },
-  payButtonText: { color: 'white', fontWeight: 'bold' },
-  verifyButton: {
-    backgroundColor: '#1D976C', // Green
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 5,
-    marginLeft: 10,
-  },
-  verifyButtonText: { color: 'white', fontWeight: 'bold' },
-  memberItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: 'white',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  memberName: {
-    fontSize: 16,
-    marginLeft: 10,
-  },
-  emptyText: { textAlign: 'center', padding: 20, color: 'gray', fontSize: 16 },
-  separator: {
-    height: 1,
-    backgroundColor: '#f0f0f0',
-    marginVertical: 20,
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 20,
-    paddingBottom: 30, 
-    backgroundColor: 'white',
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  buttonLink: {
-    flex: 1,
-    flexDirection: 'row',
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#1D976C', // Green
-    marginHorizontal: 5,
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  buttonText: {
-    color: '#1D976C',
-    textAlign: 'center',
-    fontWeight: 'bold',
-    fontSize: 16,
-    marginLeft: 5,
-  },
-  buttonPrimary: {
-    backgroundColor: '#1D976C', // Green
-  },
-  buttonTextPrimary: {
-    color: 'white',
-  },
-  deleteButtonContainer: {
-    marginTop: 20,
-    paddingTop: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-    alignItems: 'center',
-  },
-  deleteButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#D9534F',
-  },
-  deleteButtonText: {
-    color: '#D9534F',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginLeft: 10,
-  },
-  infoBox: {
-    backgroundColor: '#f9f9f9',
-    borderRadius: 10,
-    padding: 15,
-    marginBottom: 20,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 5,
-  },
-  infoText: {
-    fontSize: 14,
-    color: 'gray',
-    marginLeft: 10,
-  },
-  // --- NEW STYLES for Collapsible List ---
-  collapsibleHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingRight: 10, // So the arrow has space
-    marginBottom: 10,
-  },
-  memberAbstractView: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 5,
-  },
-  memberIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#1D976C',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'white',
-  },
-  memberIconText: {
-    marginLeft: -5,
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#555',
-    paddingLeft: 10,
-  },
+  safeArea: { flex: 1, backgroundColor: '#F5F7FA' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  headerInfo: { marginBottom: 20 },
+  groupName: { fontSize: 28, fontWeight: 'bold', color: '#333' },
+  sectionTitle: { fontSize: 18, fontWeight: '700', color: '#333', marginBottom: 10, marginTop: 10 },
+
+  // Settlement Cards
+  settlementCardRed: { backgroundColor: 'white', borderRadius: 16, padding: 16, marginBottom: 10, borderLeftWidth: 5, borderLeftColor: '#D9534F', elevation: 2 },
+  settlementCardGreen: { backgroundColor: 'white', borderRadius: 16, padding: 16, marginBottom: 10, borderLeftWidth: 5, borderLeftColor: '#1D976C', elevation: 2 },
+  settledCard: { backgroundColor: '#E8F5E9', borderRadius: 12, padding: 20, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
+  settledText: { marginLeft: 10, color: '#1D976C', fontWeight: 'bold', fontSize: 16 },
+  
+  settleTitle: { fontSize: 14, color: '#666', fontWeight: '600' },
+  settleDesc: { fontSize: 16, color: '#333', marginTop: 2 },
+  settleAmountRed: { fontSize: 22, fontWeight: 'bold', color: '#D9534F' },
+  settleAmountGreen: { fontSize: 22, fontWeight: 'bold', color: '#1D976C' },
+  
+  payButton: { backgroundColor: '#D9534F', paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginTop: 10 },
+  verifyButton: { backgroundColor: '#1D976C', paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginTop: 10 },
+  payButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16 },
+  pendingText: { color: '#D9534F', fontWeight: 'bold', textAlign: 'center', padding: 10, backgroundColor: '#FFF5F5', borderRadius: 8, marginTop: 10 },
+
+  expenseItem: { backgroundColor: 'white', borderRadius: 12, padding: 16, marginHorizontal: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  expenseRow: { flexDirection: 'row', alignItems: 'center' },
+  expenseIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#E8F5E9', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  expenseDesc: { fontSize: 16, fontWeight: '600', color: '#333' },
+  expenseUser: { fontSize: 12, color: '#888' },
+  expenseTotal: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+  
+  emptyText: { textAlign: 'center', color: '#999', marginTop: 30 },
+  buttonRow: { flexDirection: 'row', position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'white', padding: 16, paddingBottom: 30, borderTopWidth: 1, borderTopColor: '#eee' },
+  buttonLink: { flex: 1, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#1D976C', alignItems: 'center', justifyContent: 'center', marginHorizontal: 6 },
+  buttonPrimary: { backgroundColor: '#1D976C' },
+  buttonText: { color: '#1D976C', fontWeight: 'bold', fontSize: 16 },
+  buttonTextPrimary: { color: 'white' },
+  deleteButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#D9534F', marginTop: 20, backgroundColor: '#FFF5F5' },
+  deleteButtonText: { color: '#D9534F', fontWeight: 'bold', marginLeft: 8 },
 });

@@ -7,7 +7,7 @@ import axios from 'axios';
 //    (e.g., 192.168.1.10) and use: 'http://192.168.1.10:3000'
 // 3. (Replace 3000 if your Node server uses a different port)
 
-const API_URL = 'http://192.168.43.179:5000/api'; // <-- CHANGE THIS URL
+const API_URL = 'http://10.250.17.179:5000/api'; // <-- CHANGE THIS URL
 
 const api = axios.create({
   baseURL: API_URL,

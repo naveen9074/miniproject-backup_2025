@@ -1,7 +1,7 @@
 // (app)/settle-payment.tsx
 import React, { useState, useEffect } from 'react';
 import { 
-  View, Text, TextInput, Button, StyleSheet, Alert, 
+  View, Text, TextInput, StyleSheet, Alert, 
   Image, ScrollView, Platform, Linking, 
   TouchableOpacity, ActivityIndicator, KeyboardAvoidingView 
 } from 'react-native';
@@ -9,16 +9,17 @@ import { useLocalSearchParams, router, Stack } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../src/api';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context'; // <-- FIX 1: Correct Import
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function SettlePaymentScreen() {
-  const { settlementId, amount, creditorName, creditorId } = useLocalSearchParams<{
+  const { settlementId, amount, creditorName, creditorId, groupId } = useLocalSearchParams<{
     settlementId: string, 
     amount: string, 
     creditorName: string, 
-    creditorId: string
+    creditorId: string,
+    groupId?: string
   }>();
-  
+
   const [customAmount, setCustomAmount] = useState(amount);
   const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,10 +38,11 @@ export default function SettlePaymentScreen() {
         if (response.data.upiId) {
           setCreditorUpiId(response.data.upiId);
         } else {
-          Alert.alert('Error', `${creditorName} has not added their UPI ID yet.`);
+          Alert.alert('Warning', `${creditorName} has not added their UPI ID yet. You can still submit proof manually.`);
         }
       } catch (error: any) {
-        Alert.alert('Error', error.response?.data?.message || 'Could not fetch UPI ID.');
+        console.log('UPI fetch error:', error);
+        Alert.alert('Warning', 'Could not fetch UPI ID. You can still submit proof manually.');
       } finally {
         setUpiLoading(false);
       }
@@ -51,6 +53,10 @@ export default function SettlePaymentScreen() {
   const handlePayWithUPI = async () => {
     if (!customAmount || parseFloat(customAmount) <= 0) {
       Alert.alert('Error', 'Please enter a valid amount.');
+      return;
+    }
+    if (!creditorUpiId) {
+      Alert.alert('Error', 'Creditor UPI ID not available.');
       return;
     }
     const upiUrl = `upi://pay?pa=${creditorUpiId}&pn=${creditorName}&am=${customAmount}&cu=INR&tn=Group split payment`;
@@ -73,9 +79,7 @@ export default function SettlePaymentScreen() {
       return;
     }
     let result = await ImagePicker.launchImageLibraryAsync({
-      // --- FIX 2: Use the deprecated version for compatibility ---
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      // --- END OF FIX ---
       quality: 0.5,
     });
     if (!result.canceled) {
@@ -85,32 +89,42 @@ export default function SettlePaymentScreen() {
 
   const handleSubmitProof = async () => {
     if (!image) {
-      Alert.alert('Error', 'Please upload a screenshot as proof of payment.');
+      Alert.alert('Error', 'Please upload a payment proof screenshot.');
       return;
     }
+    if (!customAmount || parseFloat(customAmount) <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount.');
+      return;
+    }
+
     setLoading(true);
     const formData = new FormData();
-    formData.append('amount_paid', customAmount);
+    formData.append('amount', customAmount);
     
-    const uri = image.uri;
-    const fileType = image.mimeType || 'image/jpeg';
-    const fileName = image.fileName || uri.split('/').pop();
-
+    // Append image
     formData.append('paymentProof', {
-      uri: Platform.OS === 'android' ? uri : uri.replace('file://', ''),
-      type: fileType,
-      name: fileName,
+      uri: image.uri,
+      type: 'image/jpeg',
+      name: `payment_proof_${Date.now()}.jpg`,
     } as any);
 
     try {
-      await api.patch(`/settlements/${settlementId}/pay`, formData, {
+      // Use the actual settlementId from params (not 'new')
+      if (!settlementId) {
+        Alert.alert('Error', 'Settlement ID is missing.');
+        setLoading(false);
+        return;
+      }
+
+      const response = await api.patch(`/settlements/${settlementId}/pay`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      Alert.alert('Success', 'Payment proof submitted for verification!');
+      
+      Alert.alert('Success', 'Payment proof submitted! Waiting for verification...');
       router.back(); 
     } catch (error: any) {
-      console.error('Failed to submit proof:', error.response?.data || error);
-      Alert.alert('Error', 'Failed to submit proof.');
+      console.error('Submission error:', error.response?.data || error);
+      Alert.alert('Error', error.response?.data?.message || 'Failed to submit proof.');
     } finally {
       setLoading(false);
     }
@@ -126,6 +140,7 @@ export default function SettlePaymentScreen() {
           <Stack.Screen options={{ title: `Pay ${creditorName}` }} />
           <Text style={styles.title}>Settle Payment</Text>
           <Text style={styles.subtitle}>You are paying <Text style={{fontWeight: 'bold'}}>{creditorName}</Text></Text>
+          
           <Text style={styles.label}>Amount to Pay (₹)</Text>
           <View style={styles.inputContainer}>
             <TextInput
@@ -133,20 +148,21 @@ export default function SettlePaymentScreen() {
               value={customAmount}
               onChangeText={setCustomAmount}
               keyboardType="numeric"
+              placeholder="0.00"
             />
           </View>
           
           {upiLoading ? (
-            <ActivityIndicator color="#1D976C" />
-          ) : (
+            <ActivityIndicator color="#1D976C" style={{marginTop: 20}} />
+          ) : creditorUpiId ? (
             <TouchableOpacity 
-              style={[styles.upiButton, !creditorUpiId && styles.disabledButton]} 
+              style={styles.upiButton}
               onPress={handlePayWithUPI}
-              disabled={!creditorUpiId}
             >
+              <Ionicons name="logo-uikit" size={20} color="white" />
               <Text style={styles.upiButtonText}>Pay ₹{customAmount || 0} with UPI</Text>
             </TouchableOpacity>
-          )}
+          ) : null}
           
           <Text style={styles.infoText}>After paying, upload the screenshot below.</Text>
           
@@ -178,7 +194,6 @@ export default function SettlePaymentScreen() {
   );
 }
 
-// ... (styles are the same)
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: 'white' },
   container: { flex: 1, padding: 20, backgroundColor: 'white' },
@@ -202,19 +217,23 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 10,
     alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 10,
-    marginTop: 10,
+    marginTop: 20,
+    flexDirection: 'row',
   },
   upiButtonText: {
     color: 'white',
     fontSize: 18,
     fontWeight: 'bold',
+    marginLeft: 10,
   },
   infoText: {
     textAlign: 'center',
     color: 'gray',
     marginBottom: 20,
     fontStyle: 'italic',
+    marginTop: 20,
   },
   imagePickerButton: {
     flexDirection: 'row',

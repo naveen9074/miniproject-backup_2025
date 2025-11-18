@@ -1,37 +1,35 @@
 // backend/middleware/uploadMiddleware.js
-const multer = require('multer');
-const path = require('path');
+const multer = require("multer");
+const path = require("path");
 
-// Set up storage for uploaded files
+// Storage config
 const storage = multer.diskStorage({
-  destination(req, file, cb) {
-    cb(null, 'uploads/'); // Save files to the 'uploads' folder
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
   },
-  filename(req, file, cb) {
-    // Create a unique filename
-    cb(null, `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`);
+  filename: (req, file, cb) => {
+    cb(
+      null,
+      `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`
+    );
   },
 });
 
-// Check if the file is an image
-function checkFileType(file, cb) {
-  const filetypes = /jpeg|jpg|png/;
-  const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = filetypes.test(file.mimetype);
+// File type validation
+const fileFilter = (req, file, cb) => {
+  const allowed = /jpeg|jpg|png/;
+  const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+  const mime = allowed.test(file.mimetype);
 
-  if (mimetype && extname) {
-    return cb(null, true);
-  } else {
-    cb(new Error('Images only! (jpeg, jpg, png)'), false);
-  }
-}
+  if (ext && mime) cb(null, true);
+  else cb(new Error("Only jpg/jpeg/png images allowed"), false);
+};
 
-// Initialize multer with storage and file filter
+// Create Multer upload instance
 const upload = multer({
-  storage,
-  fileFilter: function (req, file, cb) {
-    checkFileType(file, cb);
-  },
+  storage: storage,
+  fileFilter: fileFilter,
 });
 
-module.exports = { upload };
+// EXPORT AS A DEFAULT FUNCTION
+module.exports = upload;
