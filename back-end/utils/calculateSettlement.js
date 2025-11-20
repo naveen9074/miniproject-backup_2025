@@ -1,9 +1,6 @@
 // backend/utils/calculateSettlement.js
-const { Expense, Settlement, User, Group } = require('../models/schema');
+const { Expense, Settlement, Group } = require('../models/schema');
 
-/**
- * Helper: ensure we can read user id string from either populated or plain ref
- */
 function userIdString(u) {
   if (!u) return null;
   if (typeof u === 'string') return u;
@@ -12,129 +9,130 @@ function userIdString(u) {
 }
 
 /**
- * computeBalances
- * Input:
- *  - expenses: array of Expense documents (with splits populated or as refs)
- *  - members: array of User documents (populated)
- * Output:
- *  - Map keyed by userId string -> { id, username, balance }
- *    Note: balance > 0 means this user paid more than their share (they should receive money)
- *          balance < 0 means this user owes money
+ * Compute Balances
+ * - CREDITS: Users who contributed (paid) money get positive balance.
+ * - DEBITS: Users who are part of the split (consumers) get negative balance.
  */
 function computeBalances(expenses, members) {
   const balances = new Map();
 
-  // Initialize
+  // 1. Initialize all members with 0.00
   members.forEach(member => {
     const id = member._id.toString();
     balances.set(id, { id, username: member.username, balance: 0 });
   });
 
-  // Sum over expenses
   expenses.forEach(expense => {
-    const payerId = userIdString(expense.paidBy);
-    const amt = Number(expense.amount) || 0;
-
-    // payer gets credited by full amount paid
-    if (payerId && balances.has(payerId)) {
-      balances.get(payerId).balance += amt;
+    const totalAmount = Number(expense.amount) || 0;
+    
+    // --- STEP 1: ADD CREDITS (Who Paid) ---
+    if (expense.contributions && expense.contributions.length > 0) {
+      expense.contributions.forEach(c => {
+        const uid = userIdString(c.user);
+        const paidAmt = Number(c.amount) || 0;
+        if (uid && balances.has(uid)) {
+          balances.get(uid).balance += paidAmt;
+        }
+      });
+    } else if (expense.paidBy) {
+       // Fallback for legacy data (single payer)
+       const payerId = userIdString(expense.paidBy);
+       if (payerId && balances.has(payerId)) {
+         balances.get(payerId).balance += totalAmount;
+       }
     }
 
-    // subtract shares for each participant according to splitType
+    // --- STEP 2: SUBTRACT DEBITS (Who Consumed) ---
+    // If custom splits are defined
     if (expense.splitType === 'custom' && Array.isArray(expense.splits) && expense.splits.length > 0) {
       expense.splits.forEach(s => {
         const uid = userIdString(s.user);
         const shareAmt = Number(s.amount) || 0;
-        if (uid && balances.has(uid)) balances.get(uid).balance -= shareAmt;
+        if (uid && balances.has(uid)) {
+           balances.get(uid).balance -= shareAmt;
+        }
       });
     } else {
-      // equal split: if splits list exists (list of users included) use that length,
-      // otherwise default to members length
-      const participants = Array.isArray(expense.splits) && expense.splits.length > 0
+      // Equal split
+      // Determine participants: either explicit list or ALL group members
+      const participants = (Array.isArray(expense.splits) && expense.splits.length > 0)
         ? expense.splits.map(s => userIdString(s.user))
         : members.map(m => m._id.toString());
+      
+      // Filter to ensure participants verify against group members
       const validParticipants = participants.filter(p => p && balances.has(p));
-      const share = validParticipants.length > 0 ? (amt / validParticipants.length) : 0;
-      validParticipants.forEach(uid => {
-        balances.get(uid).balance -= share;
-      });
+      
+      if (validParticipants.length > 0) {
+        const share = totalAmount / validParticipants.length;
+        validParticipants.forEach(uid => {
+          balances.get(uid).balance -= share;
+        });
+      }
     }
   });
+
+  // Rounding pass to fix floating point errors
+  for (const [key, val] of balances) {
+    val.balance = Math.round(val.balance * 100) / 100;
+  }
 
   return balances;
 }
 
-/**
- * computeSettlementPairsFromBalances
- * Input: balances Map from computeBalances
- * Output: array of settlement pairs { from: {id, username}, to: {id, username}, amount }
- * Greedy algorithm: match largest creditor with largest debtor until settled
- */
 function computeSettlementPairsFromBalances(balancesMap) {
-  // Convert to arrays
   const arr = Array.from(balancesMap.values()).map(u => ({ ...u }));
-  // creditors: balance > 0  (they should receive)
-  // debtors: balance < 0  (they owe)
-  const creditors = arr.filter(u => u.balance > 0.01).sort((a,b) => b.balance - a.balance);
-  const debtors = arr.filter(u => u.balance < -0.01).sort((a,b) => a.balance - b.balance); // most negative first
+
+  // Separate into debtors (negative balance) and creditors (positive balance)
+  // Sort by magnitude (largest debts/credits first) to minimize number of transactions
+  const creditors = arr.filter(u => u.balance > 0.01).sort((a, b) => b.balance - a.balance);
+  const debtors = arr.filter(u => u.balance < -0.01).sort((a, b) => a.balance - b.balance); // Most negative first
 
   const pairs = [];
-  let i = 0, j = 0;
+  let i = 0; // creditor index
+  let j = 0; // debtor index
+
   while (i < creditors.length && j < debtors.length) {
     const credit = creditors[i];
     const debt = debtors[j];
+    
+    // The amount to settle is the minimum of what the creditor is owed and what the debtor owes
+    // debt.balance is negative, so we negate it
     const amount = Math.min(credit.balance, -debt.balance);
-    if (amount <= 0.0001) break;
 
-    pairs.push({
-      from: { id: debt.id, username: debt.username },
-      to: { id: credit.id, username: credit.username },
-      amount: Number(amount.toFixed(2))
-    });
+    if (amount > 0.009) { // Ignore micro-pennies
+      pairs.push({
+        from: { id: debt.id, username: debt.username },
+        to: { id: credit.id, username: credit.username },
+        amount: Number(amount.toFixed(2))
+      });
+    }
 
-    // adjust
-    credit.balance = Number((credit.balance - amount).toFixed(2));
-    debt.balance = Number((debt.balance + amount).toFixed(2)); // debt.balance negative, add amount towards zero
+    // Adjust remaining balances
+    credit.balance -= amount;
+    debt.balance += amount; // bringing it closer to 0
 
-    if (credit.balance <= 0.01) i++;
-    if (debt.balance >= -0.01) j++;
+    // Move indices if settled
+    if (credit.balance < 0.01) i++;
+    if (debt.balance > -0.01) j++;
   }
 
   return pairs;
 }
 
-/**
- * computePerExpenseSettlements
- * Input: single expense doc and members list.
- * Output: settlement pairs limited to this expense only.
- */
-function computePerExpenseSettlements(expense, members) {
-  // Build balances for this single expense (reuse computeBalances)
-  const balances = computeBalances([expense], members); // returns Map
-  return computeSettlementPairsFromBalances(balances);
-}
-
-/**
- * calculateAndSaveSettlements(groupId)
- * - Recalculates global balances from all expenses
- * - Subtracts payments that are 'completed' (only completed payments should reduce debt)
- * - Produces general pending Settlement rows to reflect net obligations
- * - Leaves expense-specific settlements untouched
- */
 const calculateAndSaveSettlements = async (groupId) => {
   const group = await Group.findById(groupId).populate('members', 'username');
   if (!group) return;
 
+  // Fetch expenses with populated references
   const expenses = await Expense.find({ group: groupId })
-    .populate('paidBy', 'username')
+    .populate('contributions.user', 'username')
     .populate('splits.user', 'username');
 
-  // 1) base theoretical balances (who owes / is owed) from all expenses
-  const balances = computeBalances(expenses, group.members); // Map
+  // 1. Compute theoretical balances from expenses
+  const balances = computeBalances(expenses, group.members);
 
-  // 2) subtract ONLY completed payments (verified by creditor)
-  //    Do NOT subtract payments in 'paid_pending_verification' status
-  //    Those should still show as owed until creditor verifies
+  // 2. Account for verified settlements (money actually changed hands)
+  // We verify only 'completed' settlements reduce the debt. 
   const completedPayments = await Settlement.find({
     group: groupId,
     status: 'completed'
@@ -145,41 +143,44 @@ const calculateAndSaveSettlements = async (groupId) => {
     const creditorId = p.creditor.toString();
     const amountPaid = Number(p.paidAmount || p.amount || 0);
     
-    // Debtor paid -> their balance increases (becomes less negative)
-    if (balances.has(debtorId)) {
-      balances.get(debtorId).balance += amountPaid;
-    }
-    // Creditor received -> their balance decreases (becomes less positive)
-    if (balances.has(creditorId)) {
-      balances.get(creditorId).balance -= amountPaid;
-    }
+    // Debtor paid -> balance increases (less negative)
+    if (balances.has(debtorId)) balances.get(debtorId).balance += amountPaid;
+    // Creditor received -> balance decreases (less positive/owed)
+    if (balances.has(creditorId)) balances.get(creditorId).balance -= amountPaid;
   });
+  
+  // Round again after payments
+  for (const [key, val] of balances) {
+    val.balance = Math.round(val.balance * 100) / 100;
+  }
 
-  // 3) compute new general settlement pairs from balances
-  const pairs = computeSettlementPairsFromBalances(balances); // array of { from,to,amount }
+  // 3. Compute required future settlements
+  const pairs = computeSettlementPairsFromBalances(balances);
 
-  // 4) persist "general" pending settlements (expenseId == null) into DB
-  //    We'll upsert matching debtor-creditor pairs with status 'pending'
-  const existingGeneral = await Settlement.find({
+  // 4. Transactional Update of Settlements
+  // We identify existing pending settlements to update vs create new ones
+  const existingPending = await Settlement.find({
     group: groupId,
     status: 'pending',
-    expenseId: null
+    expenseId: null // General settlements only
   });
-
-  const processed = new Set();
+  
+  const processedIds = new Set();
 
   for (const p of pairs) {
-    // try to find existing general row
-    const ex = existingGeneral.find(s =>
-      s.debtor.toString() === p.from.id && s.creditor.toString() === p.to.id
+    // Look for an existing pending match to update (IDEMPOTENCY)
+    const match = existingPending.find(s => 
+      s.debtor.toString() === p.from.id && 
+      s.creditor.toString() === p.to.id
     );
 
-    if (ex) {
-      ex.amount = p.amount;
-      await ex.save();
-      processed.add(ex._id.toString());
+    if (match) {
+      match.amount = p.amount; // Update amount if changed
+      await match.save();
+      processedIds.add(match._id.toString());
     } else {
-      const created = await Settlement.create({
+      // Create new
+      const newSettlement = await Settlement.create({
         group: groupId,
         debtor: p.from.id,
         creditor: p.to.id,
@@ -187,13 +188,13 @@ const calculateAndSaveSettlements = async (groupId) => {
         status: 'pending',
         expenseId: null
       });
-      processed.add(created._id.toString());
+      processedIds.add(newSettlement._id.toString());
     }
   }
 
-  // Delete old pending general settlements that are no longer needed
-  for (const s of existingGeneral) {
-    if (!processed.has(s._id.toString())) {
+  // Cleanup: Delete pending settlements that are no longer needed (e.g., balances changed)
+  for (const s of existingPending) {
+    if (!processedIds.has(s._id.toString())) {
       await Settlement.findByIdAndDelete(s._id);
     }
   }
@@ -202,6 +203,5 @@ const calculateAndSaveSettlements = async (groupId) => {
 module.exports = {
   computeBalances,
   computeSettlementPairsFromBalances,
-  computePerExpenseSettlements,
   calculateAndSaveSettlements
 };

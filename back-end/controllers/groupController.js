@@ -6,7 +6,6 @@ const {
   computeBalances,
 } = require("../utils/calculateSettlement");
 
-
 // -----------------------------------------------------
 // GET ALL GROUPS FOR CURRENT USER
 // -----------------------------------------------------
@@ -17,7 +16,6 @@ const getGroups = asyncHandler(async (req, res) => {
 
   res.json(groups);
 });
-
 
 // -----------------------------------------------------
 // CREATE GROUP
@@ -42,7 +40,6 @@ const createGroup = asyncHandler(async (req, res) => {
 
   res.status(201).json(group);
 });
-
 
 // -----------------------------------------------------
 // ADD MEMBER TO GROUP
@@ -79,7 +76,6 @@ const addMember = asyncHandler(async (req, res) => {
   res.json({ message: "Member added", group });
 });
 
-
 // -----------------------------------------------------
 // DELETE GROUP
 // -----------------------------------------------------
@@ -104,13 +100,12 @@ const deleteGroup = asyncHandler(async (req, res) => {
   res.json({ message: "Group deleted successfully" });
 });
 
-
 // -----------------------------------------------------
 // GET GROUP DETAILS
 // -----------------------------------------------------
 const getGroupDetails = asyncHandler(async (req, res) => {
   const group = await Group.findById(req.params.id)
-    .populate("members", "username")
+    .populate("members", "username email")
     .populate("createdBy", "username");
 
   if (!group) {
@@ -123,11 +118,14 @@ const getGroupDetails = asyncHandler(async (req, res) => {
     throw new Error("Not authorized to view this group");
   }
 
+  // Ensure settlements are up to date
   await calculateAndSaveSettlements(group._id);
 
   const expenses = await Expense.find({ group: req.params.id })
-    .populate("paidBy", "username")
-    .populate("splits.user", "username");
+    .sort({ date: -1 })
+    .populate("contributions.user", "username")
+    .populate("splits.user", "username")
+    .populate("createdBy", "username");
 
   const settlements = await Settlement.find({ group: req.params.id })
     .populate("debtor", "username")
@@ -141,62 +139,40 @@ const getGroupDetails = asyncHandler(async (req, res) => {
   });
 
   const balancesMap = computeBalances(expenses, group.members);
-
+  
   const payments = await Settlement.find({
     group: group._id,
-    status: { $in: ["paid_pending_verification", "verified"] },
+    status: 'completed'
   });
 
   payments.forEach((p) => {
     const debtor = p.debtor.toString();
     const creditor = p.creditor.toString();
-    const amt = Number(p.amount_paid || p.amount || 0);
-
+    const amt = Number(p.paidAmount || p.amount || 0);
     if (balancesMap.has(debtor)) balancesMap.get(debtor).balance += amt;
     if (balancesMap.has(creditor)) balancesMap.get(creditor).balance -= amt;
   });
+
+  const memberBalances = Array.from(balancesMap.values()).map(b => ({
+    userId: b.id,
+    username: b.username,
+    balance: Number(b.balance.toFixed(2)),
+    status: b.balance > 0 ? 'gets_back' : (b.balance < 0 ? 'owes' : 'settled')
+  }));
 
   const currentUserId = req.user._id.toString();
   const currentUserNet = balancesMap.has(currentUserId)
     ? Number(balancesMap.get(currentUserId).balance.toFixed(2))
     : 0;
 
-  const expensePayments = await Settlement.aggregate([
-    {
-      $match: {
-        group: group._id,
-        expenseId: { $ne: null },
-      },
-    },
-    {
-      $group: {
-        _id: "$expenseId",
-        totalPaid: { $sum: { $ifNull: ["$amount_paid", "$amount"] } },
-      },
-    },
-  ]);
-
-  const paidMap = new Map();
-  expensePayments.forEach((e) =>
-    paidMap.set(String(e._id), Number(e.totalPaid || 0))
-  );
-
-  const expensesAnnotated = expenses.map((exp) => {
-    const paid = paidMap.get(String(exp._id)) || 0;
-    const isSettled = paid + 0.001 >= Number(exp.amount || 0);
-    const obj = exp.toObject();
-    obj.isSettled = isSettled;
-    return obj;
-  });
-
   res.json({
     group,
-    expenses: expensesAnnotated,
+    expenses,
     settlements: settlementsWithFlags,
+    memberBalances,
     currentUserNet,
   });
 });
-
 
 // -----------------------------------------------------
 // EXPORT ALL CONTROLLERS

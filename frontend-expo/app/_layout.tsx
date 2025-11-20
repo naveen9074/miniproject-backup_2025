@@ -18,11 +18,12 @@ export default function RootLayout() {
       <Stack.Screen name="group/[id]" options={{ title: 'Group Details' }} />
       <Stack.Screen name="settle-payment" options={{ title: 'Settle Payment' }} />
       <Stack.Screen name="verify-payment/[settlementId]" options={{ title: 'Verify Payment' }} />
-      
-      {/* --- FIX: Register these missing routes --- */}
       <Stack.Screen name="expense/[expenseId]" options={{ title: 'Expense Details' }} />
       <Stack.Screen name="edit-profile" options={{ title: 'Edit Profile', presentation: 'modal' }} />
       <Stack.Screen name="edit-group/[id]" options={{ title: 'Edit Group', presentation: 'modal' }} />
+      
+      {/* NEW */}
+      <Stack.Screen name="notifications" options={{ title: 'Notifications' }} />
     </Stack>
   );
 }

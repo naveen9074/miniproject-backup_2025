@@ -2,15 +2,22 @@
 const express = require('express');
 const router = express.Router();
 
+const controller = require('../controllers/groupController');
 const {
   getGroups,
   createGroup,
   getGroupDetails,
   addMember,
   deleteGroup
-} = require('../controllers/groupController');
+} = controller;
 
 const { protect } = require('../middleware/authMiddleware');
+
+// Debugging check to ensure all functions are loaded
+if (!getGroups || !createGroup || !getGroupDetails || !addMember || !deleteGroup) {
+  console.error("❌ Error: One or more groupController functions are undefined.");
+  console.error("Loaded controller keys:", Object.keys(controller));
+}
 
 // GET all groups / Create group
 router.route('/')
